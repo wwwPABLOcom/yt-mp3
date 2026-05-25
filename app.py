@@ -5,6 +5,7 @@ import yt_dlp
 import zipfile
 import shutil
 import uuid
+import concurrent.futures
 
 # ==========================================
 # 1. CONFIGURACIÓN
@@ -16,7 +17,7 @@ st.set_page_config(
 )
 
 # ==========================================
-# CSS ADAPTADO (Oculto por brevedad, mantén el tuyo)
+# CSS ADAPTADO 
 # ==========================================
 st.markdown("""
 <style>
@@ -43,62 +44,76 @@ if 'file_data' not in st.session_state:
     st.session_state.mime_type = None
 
 # ==========================================
-# HEADER
+# FUNCIONES MULTITHREAD
 # ==========================================
-st.markdown("""
-<div class="hero-wrap">
-    <div class="hero-title">Downloader MP3</div>
-    <div class="hero-sub">
-        Pega un enlace de YouTube. ¡Soporta videos individuales y Playlists enteras!
-    </div>
-</div>
-""", unsafe_allow_html=True)
+def descargar_item_worker(video_url, index, tmp_dir):
+    """Worker individual para descargar y convertir una sola pista"""
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}],
+        # Formateamos con ceros a la izquierda para que el ZIP se ordene bien (01_, 02_...)
+        'outtmpl': os.path.join(tmp_dir, f"{index:02d}_%(title)s.%(ext)s"), 
+        'quiet': True, 
+        'no_warnings': True,
+        'ignoreerrors': True,
+        'source_address': '0.0.0.0'
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([video_url])
+    except Exception:
+        pass  # Si un video está bloqueado/privado, el hilo muere en silencio y pasa al siguiente
 
-# ==========================================
-# LÓGICA DE DESCARGA (VIDEOS Y PLAYLISTS)
-# ==========================================
-def descargar_audio_youtube(url):
-    # Creamos una carpeta temporal única para esta descarga para evitar conflictos
+def procesar_enlace(url):
     run_id = uuid.uuid4().hex
     tmp_dir = os.path.join(tempfile.gettempdir(), run_id)
     os.makedirs(tmp_dir, exist_ok=True)
     
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio', 
-            'preferredcodec': 'mp3', 
-            'preferredquality': '192'
-        }],
-        # Nombramos los archivos con su índice de playlist (si aplica) y título
-        'outtmpl': os.path.join(tmp_dir, '%(playlist_index)s_%(title)s.%(ext)s'), 
-        'quiet': True, 
+    # 1. Extraer metadata rápido (sin descargar)
+    ydl_opts_info = {
+        'extract_flat': True,  # Clave para extraer urls de playlist en segundos
+        'quiet': True,
         'no_warnings': True,
-        'ignoreerrors': True, # Si un video de la playlist está borrado, lo salta y sigue
+        'ignoreerrors': True,
+        'source_address': '0.0.0.0'
     }
     
-    with st.spinner("⬇️ Extrayendo y convirtiendo... (Si es una playlist, ve a hacerte un café ☕)"):
+    with st.spinner("⬇️ Analizando enlaces y desplegando 4 workers en paralelo..."):
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info_dict = ydl.extract_info(url, download=True)
+            with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
+                info_dict = ydl.extract_info(url, download=False)
                 titulo_principal = info_dict.get('title', 'YouTube_Audio')
+                
+                # Clasificamos si es video suelto o playlist
+                if 'entries' in info_dict:
+                    entradas = [(i+1, e['url']) for i, e in enumerate(info_dict['entries']) if e.get('url')]
+                else:
+                    entradas = [(1, info_dict.get('original_url', url))]
 
-            # Revisamos qué se ha descargado en nuestra carpeta temporal
-            archivos_descargados = [f for f in os.listdir(tmp_dir) if f.endswith('.mp3')]
+            # 2. MAGIA MULTITHREAD: Procesamos la cola con 4 hilos simultáneos
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                futuros = [executor.submit(descargar_item_worker, enlace, idx, tmp_dir) for idx, enlace in entradas]
+                # Esperamos a que los 4 hilos terminen con todas las tareas
+                concurrent.futures.wait(futuros)
+
+            # 3. Empaquetado
+            archivos_descargados = sorted([f for f in os.listdir(tmp_dir) if f.endswith('.mp3')])
             
             if not archivos_descargados:
                 return None, None, None
 
-            # CASO 1: Es un solo video
+            # Si era solo un video, lo servimos directo
             if len(archivos_descargados) == 1:
                 ruta_mp3 = os.path.join(tmp_dir, archivos_descargados[0])
                 with open(ruta_mp3, "rb") as file:
                     data = file.read()
-                
                 shutil.rmtree(tmp_dir, ignore_errors=True)
-                return data, f"{titulo_principal}.mp3", "audio/mpeg"
                 
-            # CASO 2: Es una Playlist (Múltiples archivos) -> Comprimimos en ZIP
+                # Limpiamos el "01_" que le puso el worker
+                nombre_limpio = archivos_descargados[0][3:]
+                return data, nombre_limpio, "audio/mpeg"
+                
+            # Si era playlist, hacemos el ZIP
             else:
                 zip_filename = f"{titulo_principal}_playlist.zip"
                 zip_path = os.path.join(tempfile.gettempdir(), zip_filename)
@@ -106,45 +121,48 @@ def descargar_audio_youtube(url):
                 with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                     for archivo in archivos_descargados:
                         ruta_archivo = os.path.join(tmp_dir, archivo)
-                        # Limpiamos el "NA_" del nombre si yt-dlp no encontró índice
-                        nombre_limpio = archivo.replace("NA_", "") 
-                        zipf.write(ruta_archivo, arcname=nombre_limpio)
+                        zipf.write(ruta_archivo, arcname=archivo)
                 
                 with open(zip_path, "rb") as file:
                     data = file.read()
                 
-                # Limpieza de temporales
                 shutil.rmtree(tmp_dir, ignore_errors=True)
                 os.remove(zip_path)
                 
                 return data, zip_filename, "application/zip"
 
         except Exception as e:
-            st.error(f"❌ Error en la descarga: {e}")
+            st.error(f"❌ Error interno: {e}")
             shutil.rmtree(tmp_dir, ignore_errors=True)
             return None, None, None
 
 # ==========================================
-# INTERFAZ DE ENTRADA
+# INTERFAZ PRINCIPAL
 # ==========================================
+st.markdown("""
+<div class="hero-wrap">
+    <div class="hero-title">Downloader MP3</div>
+    <div class="hero-sub">🚀 Motor Multithread (4 Workers) activado. Pega una playlist.</div>
+</div>
+""", unsafe_allow_html=True)
+
 st.markdown('<div class="glass-card">', unsafe_allow_html=True)
 
-youtube_url = st.text_input("Enlace del vídeo o Playlist", placeholder="https://www.youtube.com/watch?v=... o &list=...")
+youtube_url = st.text_input("Enlace de YouTube (Video o Playlist):", placeholder="https://www.youtube.com/...")
 
-if st.button("🎵 Preparar Descarga"):
+if st.button("🎵 Extraer y Procesar"):
     if youtube_url:
         st.session_state.file_data = None  
-        data, filename, mime = descargar_audio_youtube(youtube_url)
+        data, filename, mime = procesar_enlace(youtube_url)
         
         if data:
             st.session_state.file_data = data
             st.session_state.file_name = filename
             st.session_state.mime_type = mime
-            st.success("✅ ¡Procesamiento completado!")
+            st.success("✅ ¡Descarga completada en tiempo récord!")
     else:
-        st.warning("⚠️ Por favor, introduce un enlace de YouTube válido.")
+        st.warning("⚠️ Introduce un enlace válido.")
 
-# Botón de descarga adaptativo (MP3 o ZIP)
 if st.session_state.file_data:
     st.markdown("<br>", unsafe_allow_html=True)
     st.download_button(
