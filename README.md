@@ -18,6 +18,7 @@ Una aplicación web moderna para extraer y descargar audio en MP3 desde YouTube,
 ## 🖥️ Capturas
 
 > *Interfaz con tema oscuro, selector de calidad y lista de resultados con duración por pista.*
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/1ae918fd-87f0-4b8c-a634-65f24a203f12" />
 
 ---
 
