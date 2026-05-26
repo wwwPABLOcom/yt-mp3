@@ -435,7 +435,7 @@ if st.session_state.playlist_data:
             if estado is None:
                 # Estado inicial: botón de preparar
                 if st.button("⬇ Preparar", key=f"btn_{v_id}"):
-                    with st.spinner(f"Descargando "{v_title[:40]}…""):
+                    with st.spinner(f'Descargando "{v_title[:40]}..."'):
                         audio_data, filename, error = descargar_audio_individual(
                             v_url, calidad=calidad_activa
                         )
