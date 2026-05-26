@@ -2,174 +2,258 @@ import streamlit as st
 import os
 import tempfile
 import yt_dlp
-import zipfile
 import shutil
 import uuid
-import concurrent.futures
 
 # ==========================================
-# 1. CONFIGURACIÓN
+# 1. CONFIGURACIÓN DE PÁGINA Y UX (SaaS Moderno)
 # ==========================================
 st.set_page_config(
-    page_title="YouTube MP3 Downloader",
+    page_title="YT to MP3 Pro",
     page_icon="🎵",
     layout="centered"
 )
 
-# ==========================================
-# CSS ADAPTADO 
-# ==========================================
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-    .stApp { background-color: #07071a; color: #e8e6f0; }
+    
+    /* Fondo principal blanco/gris muy claro */
+    .stApp { background-color: #F9FAFB; color: #111827; }
     #MainMenu, footer, header { visibility: hidden; }
-    .block-container { padding: 1.5rem 2rem 5rem 2rem; max-width: 800px; z-index: 1; }
-    .hero-wrap { text-align: center; padding: 3rem 1rem 2.5rem 1rem; }
-    .hero-title { font-size: 3rem; font-weight: 800; background: linear-gradient(135deg, #e0d7ff 10%, #a78bfa 45%, #7c3aed 70%, #c084fc 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.6rem; }
-    .hero-sub { color: #8b88a8; max-width: 480px; margin: 0 auto; }
-    .glass-card { background: rgba(255, 255, 255, 0.035); backdrop-filter: blur(12px); border: 1px solid rgba(167, 139, 250, 0.14); border-radius: 20px; padding: 1.75rem 2rem; margin-bottom: 1.25rem; }
-    .stTextInput > div > div > input { background: rgba(255,255,255,0.05) !important; border: 1px solid rgba(167, 139, 250, 0.22) !important; border-radius: 12px !important; color: #e8e6f0 !important; }
-    .stButton > button, .stDownloadButton > button { width: 100%; background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 50%, #5b21b6 100%) !important; color: #f3f0ff !important; border-radius: 12px !important; font-weight: 600 !important; }
+    .block-container { padding: 2rem 2rem 5rem 2rem; max-width: 750px; z-index: 1; }
+    
+    /* Títulos limpios */
+    .hero-wrap { text-align: center; padding: 2rem 1rem 2rem 1rem; }
+    .hero-title { font-size: 2.8rem; font-weight: 800; color: #111827; letter-spacing: -1px; margin-bottom: 0.5rem; }
+    .hero-sub { color: #4B5563; max-width: 480px; margin: 0 auto; font-size: 1.1rem;}
+    
+    /* Tarjeta moderna con sombra suave */
+    .glass-card { 
+        background: #FFFFFF; 
+        border: 1px solid #E5E7EB; 
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); 
+        border-radius: 16px; 
+        padding: 2rem; 
+        margin-bottom: 1.5rem; 
+    }
+    
+    /* Input de texto */
+    .stTextInput > div > div > input { 
+        background: #F3F4F6 !important; 
+        border: 1px solid #D1D5DB !important; 
+        border-radius: 8px !important; 
+        color: #111827 !important; 
+        padding: 0.75rem 1rem;
+    }
+    .stTextInput > div > div > input:focus {
+        border-color: #000000 !important;
+        box-shadow: 0 0 0 1px #000000 !important;
+    }
+    
+    /* Botones estilo Apple/Vercel (Negro sólido y variantes) */
+    .stButton > button { 
+        width: 100%; 
+        background: #F3F4F6 !important; 
+        color: #111827 !important; 
+        border: 1px solid #D1D5DB !important;
+        border-radius: 8px !important; 
+        font-weight: 600 !important; 
+        padding: 0.4rem;
+        transition: all 0.2s ease; 
+    }
+    .stButton > button:hover { background: #E5E7EB !important; }
+    
+    /* Botón principal (Submit / Descargar) */
+    .primary-btn > div > .stButton > button, .stDownloadButton > button {
+        background: #111827 !important; 
+        color: #FFFFFF !important; 
+        border: none !important;
+        padding: 0.6rem;
+    }
+    .primary-btn > div > .stButton > button:hover, .stDownloadButton > button:hover {
+        background: #374151 !important; 
+        transform: translateY(-1px); 
+    }
+    
+    /* Ajustes para la lista */
+    .list-item { padding: 0.5rem 0; border-bottom: 1px solid #E5E7EB; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# MANEJO DE ESTADO
+# 2. INICIALIZACIÓN DE ESTADO
 # ==========================================
-if 'file_data' not in st.session_state:
-    st.session_state.file_data = None
-    st.session_state.file_name = None
-    st.session_state.mime_type = None
+if 'playlist_data' not in st.session_state:
+    st.session_state.playlist_data = None
+if 'processed_audios' not in st.session_state:
+    st.session_state.processed_audios = {}
 
 # ==========================================
-# FUNCIONES MULTITHREAD
+# 3. NÚCLEO DE LÓGICA (BACKEND)
 # ==========================================
-def descargar_item_worker(video_url, index, tmp_dir):
-    """Worker individual para descargar y convertir una sola pista"""
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}],
-        # Formateamos con ceros a la izquierda para que el ZIP se ordene bien (01_, 02_...)
-        'outtmpl': os.path.join(tmp_dir, f"{index:02d}_%(title)s.%(ext)s"), 
-        'quiet': True, 
-        'no_warnings': True,
-        'ignoreerrors': True,
-        'source_address': '0.0.0.0'
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([video_url])
-    except Exception:
-        pass  # Si un video está bloqueado/privado, el hilo muere en silencio y pasa al siguiente
 
-def procesar_enlace(url):
-    run_id = uuid.uuid4().hex
-    tmp_dir = os.path.join(tempfile.gettempdir(), run_id)
-    os.makedirs(tmp_dir, exist_ok=True)
-    
-    # 1. Extraer metadata rápido (sin descargar)
+@st.cache_data(show_spinner=False, ttl=3600)
+def extraer_metadatos(url):
+    """Extrae la estructura de un video o playlist sin descargar nada."""
     ydl_opts_info = {
-        'extract_flat': True,  # Clave para extraer urls de playlist en segundos
+        'extract_flat': True,
         'quiet': True,
         'no_warnings': True,
         'ignoreerrors': True,
-        'source_address': '0.0.0.0'
     }
     
-    with st.spinner("⬇️ Analizando enlaces y desplegando 4 workers en paralelo..."):
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
-                info_dict = ydl.extract_info(url, download=False)
-                titulo_principal = info_dict.get('title', 'YouTube_Audio')
-                
-                # Clasificamos si es video suelto o playlist
-                if 'entries' in info_dict:
-                    entradas = [(i+1, e['url']) for i, e in enumerate(info_dict['entries']) if e.get('url')]
-                else:
-                    entradas = [(1, info_dict.get('original_url', url))]
-
-            # 2. MAGIA MULTITHREAD: Procesamos la cola con 4 hilos simultáneos
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-                futuros = [executor.submit(descargar_item_worker, enlace, idx, tmp_dir) for idx, enlace in entradas]
-                # Esperamos a que los 4 hilos terminen con todas las tareas
-                concurrent.futures.wait(futuros)
-
-            # 3. Empaquetado
-            archivos_descargados = sorted([f for f in os.listdir(tmp_dir) if f.endswith('.mp3')])
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
+            info = ydl.extract_info(url, download=False)
             
-            if not archivos_descargados:
-                return None, None, None
+        if not info: 
+            return {"error": "No se pudo extraer información del enlace."}
+            
+        resultados = []
+        
+        if 'entries' in info:
+            for i, entry in enumerate(info['entries']):
+                if entry and entry.get('id'):
+                    resultados.append({
+                        'index': i + 1,
+                        'id': entry['id'],
+                        'title': entry.get('title', f'Audio Desconocido {i+1}'),
+                        'url': entry.get('url') or f"https://www.youtube.com/watch?v={entry['id']}"
+                    })
+        else:
+            resultados.append({
+                'index': 1,
+                'id': info.get('id', uuid.uuid4().hex[:8]),
+                'title': info.get('title', 'Audio_Desconocido'),
+                'url': info.get('original_url', url)
+            })
+            
+        return resultados
+    except Exception as e:
+        return {"error": str(e)}
 
-            # Si era solo un video, lo servimos directo
-            if len(archivos_descargados) == 1:
-                ruta_mp3 = os.path.join(tmp_dir, archivos_descargados[0])
-                with open(ruta_mp3, "rb") as file:
-                    data = file.read()
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-                
-                # Limpiamos el "01_" que le puso el worker
-                nombre_limpio = archivos_descargados[0][3:]
-                return data, nombre_limpio, "audio/mpeg"
-                
-            # Si era playlist, hacemos el ZIP
-            else:
-                zip_filename = f"{titulo_principal}_playlist.zip"
-                zip_path = os.path.join(tempfile.gettempdir(), zip_filename)
-                
-                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                    for archivo in archivos_descargados:
-                        ruta_archivo = os.path.join(tmp_dir, archivo)
-                        zipf.write(ruta_archivo, arcname=archivo)
-                
-                with open(zip_path, "rb") as file:
-                    data = file.read()
-                
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-                os.remove(zip_path)
-                
-                return data, zip_filename, "application/zip"
-
-        except Exception as e:
-            st.error(f"❌ Error interno: {e}")
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            return None, None, None
+def descargar_audio_individual(video_url):
+    """Descarga y procesa un solo video con límite de hilos para CPU."""
+    tmp_dir = os.path.join(tempfile.gettempdir(), uuid.uuid4().hex)
+    os.makedirs(tmp_dir, exist_ok=True)
+    
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'postprocessors': [
+            {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'},
+            {'key': 'FFmpegMetadata'},
+            {'key': 'EmbedThumbnail'}
+        ],
+        'postprocessor_args': [
+            '-threads', '2'  # Límite estricto para no saturar los 4 cores
+        ],
+        'writethumbnail': True,
+        'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
+        'quiet': True,
+        'no_warnings': True
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([video_url])
+            
+        archivos = [f for f in os.listdir(tmp_dir) if f.endswith('.mp3')]
+        if not archivos:
+            raise Exception("Restricción de edad o copyright detectada.")
+            
+        filename = archivos[0]
+        ruta = os.path.join(tmp_dir, filename)
+        
+        with open(ruta, "rb") as f:
+            data = f.read()
+            
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return data, filename, None
+        
+    except Exception as e:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return None, None, str(e)
 
 # ==========================================
-# INTERFAZ PRINCIPAL
+# 4. INTERFAZ (FRONTEND)
 # ==========================================
+
 st.markdown("""
 <div class="hero-wrap">
-    <div class="hero-title">Downloader MP3</div>
-    <div class="hero-sub">🚀 Motor Multithread (4 Workers) activado. Pega una playlist.</div>
+    <div class="hero-title">YT Audio Pro</div>
+    <div class="hero-sub">Pega tu enlace para extraer la lista al instante y descargar individualmente lo que necesites, sin bloqueos.</div>
 </div>
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="glass-card">', unsafe_allow_html=True)
 
-youtube_url = st.text_input("Enlace de YouTube (Video o Playlist):", placeholder="https://www.youtube.com/...")
+youtube_url = st.text_input("Enlace de YouTube:", placeholder="https://www.youtube.com/watch?v=... o &list=...")
 
-if st.button("🎵 Extraer y Procesar"):
+st.markdown('<div class="primary-btn">', unsafe_allow_html=True)
+if st.button("Analizar Enlace"):
     if youtube_url:
-        st.session_state.file_data = None  
-        data, filename, mime = procesar_enlace(youtube_url)
-        
-        if data:
-            st.session_state.file_data = data
-            st.session_state.file_name = filename
-            st.session_state.mime_type = mime
-            st.success("✅ ¡Descarga completada en tiempo récord!")
+        with st.spinner("Extraiendo estructura..."):
+            datos = extraer_metadatos(youtube_url)
+            
+            if isinstance(datos, dict) and "error" in datos:
+                st.error(f"❌ {datos['error']}")
+            elif not datos:
+                st.warning("⚠️ No se encontraron videos válidos.")
+            else:
+                st.session_state.playlist_data = datos
+                st.session_state.processed_audios = {}
     else:
         st.warning("⚠️ Introduce un enlace válido.")
-
-if st.session_state.file_data:
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.download_button(
-        label=f"💾 Guardar: {st.session_state.file_name}",
-        data=st.session_state.file_data,
-        file_name=st.session_state.file_name,
-        mime=st.session_state.mime_type
-    )
-
 st.markdown('</div>', unsafe_allow_html=True)
+st.markdown('</div>', unsafe_allow_html=True)
+
+# ==========================================
+# 5. RENDERIZADO DE RESULTADOS
+# ==========================================
+
+if st.session_state.playlist_data:
+    st.markdown("### 📋 Resultados encontrados")
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    for item in st.session_state.playlist_data:
+        v_id = item['id']
+        v_title = item['title']
+        v_url = item['url']
+        v_idx = item['index']
+        
+        col1, col2 = st.columns([3, 1], gap="medium", vertical_alignment="center")
+        
+        with col1:
+            st.markdown(f"<div class='list-item'><strong>{v_idx}.</strong> {v_title}</div>", unsafe_allow_html=True)
+            
+        with col2:
+            if v_id in st.session_state.processed_audios:
+                estado = st.session_state.processed_audios[v_id]
+                
+                if estado.get("error"):
+                    st.error("❌ Falló", icon="🚨")
+                else:
+                    st.download_button(
+                        label="💾 Guardar",
+                        data=estado["data"],
+                        file_name=estado["filename"],
+                        mime="audio/mpeg",
+                        key=f"dl_{v_id}"
+                    )
+            else:
+                if st.button("⬇️ Preparar", key=f"btn_{v_id}"):
+                    with st.spinner("Descargando..."):
+                        audio_data, filename, error = descargar_audio_individual(v_url)
+                        
+                        if error:
+                            st.session_state.processed_audios[v_id] = {"error": error}
+                            st.toast(f"Error procesando {v_title}", icon="⚠️")
+                        else:
+                            st.session_state.processed_audios[v_id] = {
+                                "data": audio_data,
+                                "filename": filename
+                            }
+                    st.rerun()
