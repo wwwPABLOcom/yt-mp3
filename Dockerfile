@@ -4,7 +4,7 @@ FROM python:3.10-slim
 # Establecemos el directorio de trabajo
 WORKDIR /app
 
-# Instalamos FFmpeg (vital para que yt-dlp pueda extraer el mp3)
+# Instalamos FFmpeg (vital para que yt-dlp pueda extraer el mp3 y sus metadatos)
 RUN apt-get update && \
     apt-get install -y ffmpeg && \
     apt-get clean && \
@@ -21,5 +21,4 @@ COPY app.py .
 EXPOSE 8501
 
 # Ejecutamos Streamlit obligándolo a escuchar en todas las interfaces (0.0.0.0)
-# Esto es clave para que sea accesible desde fuera del contenedor y de tu host
 CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
